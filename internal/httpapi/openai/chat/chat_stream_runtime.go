@@ -19,14 +19,15 @@ type chatStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	completionID  string
-	created       int64
-	model         string
-	finalPrompt   string
-	refFileTokens int
-	toolNames     []string
-	toolsRaw      any
-	toolChoice    promptcompat.ToolChoicePolicy
+	completionID   string
+	created        int64
+	model          string
+	finalPrompt    string
+	refFileTokens  int
+	toolNames      []string
+	toolsRaw       any
+	toolChoice     promptcompat.ToolChoicePolicy
+	responseFormat *promptcompat.ResponseFormat
 
 	thinkingEnabled       bool
 	searchEnabled         bool
@@ -93,6 +94,7 @@ func newChatStreamRuntime(
 	toolNames []string,
 	toolsRaw any,
 	toolChoice promptcompat.ToolChoicePolicy,
+	responseFormat *promptcompat.ResponseFormat,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 ) *chatStreamRuntime {
@@ -107,6 +109,7 @@ func newChatStreamRuntime(
 		toolNames:             toolNames,
 		toolsRaw:              toolsRaw,
 		toolChoice:            toolChoice,
+		responseFormat:        responseFormat,
 		thinkingEnabled:       thinkingEnabled,
 		searchEnabled:         searchEnabled,
 		stripReferenceMarkers: stripReferenceMarkers,
@@ -238,6 +241,7 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 		ToolNames:             s.toolNames,
 		ToolsRaw:              s.toolsRaw,
 		ToolChoice:            s.toolChoice,
+		ResponseFormat:        s.responseFormat,
 	})
 	s.finalThinking = turn.Thinking
 	s.finalText = turn.Text

@@ -21,14 +21,15 @@ type responsesStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	responseID    string
-	model         string
-	finalPrompt   string
-	refFileTokens int
-	toolNames     []string
-	toolsRaw      any
-	traceID       string
-	toolChoice    promptcompat.ToolChoicePolicy
+	responseID     string
+	model          string
+	finalPrompt    string
+	refFileTokens  int
+	toolNames      []string
+	toolsRaw       any
+	traceID        string
+	toolChoice     promptcompat.ToolChoicePolicy
+	responseFormat *promptcompat.ResponseFormat
 
 	thinkingEnabled       bool
 	searchEnabled         bool
@@ -80,6 +81,7 @@ func newResponsesStreamRuntime(
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
 	toolChoice promptcompat.ToolChoicePolicy,
+	responseFormat *promptcompat.ResponseFormat,
 	traceID string,
 	persistResponse func(obj map[string]any),
 	history *responsehistory.Session,
@@ -107,6 +109,7 @@ func newResponsesStreamRuntime(
 		functionNames:         map[int]string{},
 		messageOutputID:       -1,
 		toolChoice:            toolChoice,
+		responseFormat:        responseFormat,
 		traceID:               traceID,
 		persistResponse:       persistResponse,
 		history:               history,
@@ -187,6 +190,7 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 		ToolNames:             s.toolNames,
 		ToolsRaw:              s.toolsRaw,
 		ToolChoice:            s.toolChoice,
+		ResponseFormat:        s.responseFormat,
 	})
 	textParsed := turn.ParsedToolCalls
 	detected := turn.ToolCalls

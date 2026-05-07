@@ -178,6 +178,7 @@ func buildOptions(stdReq promptcompat.StandardRequest, prompt string, opts Optio
 		ToolNames:             stdReq.ToolNames,
 		ToolsRaw:              stdReq.ToolsRaw,
 		ToolChoice:            stdReq.ToolChoice,
+		ResponseFormat:        stdReq.ResponseFormat,
 	}
 }
 

@@ -31,6 +31,10 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 	if responseModel == "" {
 		responseModel = resolvedModel
 	}
+	rf := ParseResponseFormat(req["response_format"])
+	if rf != nil && rf.IsJSON() {
+		messagesRaw = InjectResponseFormatIntoMessages(messagesRaw, rf)
+	}
 	toolPolicy := DefaultToolChoicePolicy()
 	finalPrompt, toolNames := BuildOpenAIPrompt(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
@@ -48,6 +52,7 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 		FinalPrompt:     finalPrompt,
 		ToolNames:       toolNames,
 		ToolChoice:      toolPolicy,
+		ResponseFormat:  rf,
 		Stream:          util.ToBool(req["stream"]),
 		Thinking:        thinkingEnabled,
 		Search:          searchEnabled,
@@ -77,6 +82,10 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 	if len(messagesRaw) == 0 {
 		return StandardRequest{}, fmt.Errorf("request must include 'input' or 'messages'")
 	}
+	rf := ParseResponsesTextFormat(req)
+	if rf != nil && rf.IsJSON() {
+		messagesRaw = InjectResponseFormatIntoMessages(messagesRaw, rf)
+	}
 	toolPolicy, err := parseToolChoicePolicy(req["tool_choice"], req["tools"])
 	if err != nil {
 		return StandardRequest{}, err
@@ -100,6 +109,7 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		FinalPrompt:     finalPrompt,
 		ToolNames:       toolNames,
 		ToolChoice:      toolPolicy,
+		ResponseFormat:  rf,
 		Stream:          util.ToBool(req["stream"]),
 		Thinking:        thinkingEnabled,
 		Search:          searchEnabled,

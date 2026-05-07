@@ -15,6 +15,7 @@ type StandardRequest struct {
 	FinalPrompt             string
 	ToolNames               []string
 	ToolChoice              ToolChoicePolicy
+	ResponseFormat          *ResponseFormat
 	Stream                  bool
 	Thinking                bool
 	Search                  bool

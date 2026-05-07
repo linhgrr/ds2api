@@ -74,6 +74,7 @@ type BuildOptions struct {
 	ToolNames             []string
 	ToolsRaw              any
 	ToolChoice            promptcompat.ToolChoicePolicy
+	ResponseFormat        *promptcompat.ResponseFormat
 }
 
 type StreamSnapshot struct {
@@ -95,6 +96,9 @@ func BuildTurnFromCollected(result sse.CollectResult, opts BuildOptions) Turn {
 	text := shared.CleanVisibleOutput(result.Text, opts.StripReferenceMarkers)
 	if opts.SearchEnabled {
 		text = shared.ReplaceCitationMarkersWithLinks(text, result.CitationLinks)
+	}
+	if opts.ResponseFormat.IsJSON() {
+		text = promptcompat.ExtractJSONOutput(text)
 	}
 
 	parsed := shared.DetectAssistantToolCalls(result.Text, text, result.Thinking, result.ToolDetectionThinking, opts.ToolNames)
@@ -137,6 +141,9 @@ func BuildTurnFromStreamSnapshot(snapshot StreamSnapshot, opts BuildOptions) Tur
 	text := shared.CleanVisibleOutput(snapshot.VisibleText, opts.StripReferenceMarkers)
 	if opts.SearchEnabled {
 		text = shared.ReplaceCitationMarkersWithLinks(text, snapshot.CitationLinks)
+	}
+	if opts.ResponseFormat.IsJSON() {
+		text = promptcompat.ExtractJSONOutput(text)
 	}
 
 	parsed := shared.DetectAssistantToolCalls(snapshot.RawText, text, snapshot.RawThinking, snapshot.DetectionThinking, opts.ToolNames)
