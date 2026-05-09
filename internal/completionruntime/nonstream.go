@@ -86,6 +86,61 @@ func prepareCurrentInputFile(ctx context.Context, ds DeepSeekCaller, a *auth.Req
 }
 
 func ExecuteNonStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, opts Options) (NonStreamResult, *assistantturn.OutputError) {
+	if !opts.RetryEnabled || a == nil || !a.SupportsRoundRobinFailover() {
+		return executeNonStreamAttempt(ctx, ds, a, stdReq, opts)
+	}
+
+	perAttemptOpts := opts
+	perAttemptOpts.MaxAttempts = 1
+	perAttemptOpts.RetryEnabled = false
+
+	maxAttempts := a.RoundRobinRetryLimit()
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	originalReq := stdReq
+	totalRetries := 0
+	var lastResult NonStreamResult
+	var lastErr *assistantturn.OutputError
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptReq := originalReq
+		result, outErr := executeNonStreamAttempt(ctx, ds, a, attemptReq, perAttemptOpts)
+		result.Attempts += totalRetries
+		if outErr == nil {
+			return result, nil
+		}
+		lastResult = result
+		lastErr = outErr
+		if attempt >= maxAttempts {
+			break
+		}
+		prevAccountID := a.AccountID
+		if !a.SwitchAccountRoundRobin(ctx) {
+			break
+		}
+		totalRetries++
+		config.Logger.Warn(
+			"[completion_runtime_account_failover] retrying with next managed account",
+			"surface", stdReq.Surface,
+			"stream", false,
+			"attempt", attempt+1,
+			"attempt_limit", maxAttempts,
+			"previous_account", prevAccountID,
+			"next_account", a.AccountID,
+			"status", outErr.Status,
+			"code", outErr.Code,
+			"error", outErr.Message,
+		)
+	}
+	if lastErr != nil {
+		lastErr.Message = fmt.Sprintf("All managed-account retries failed after %d attempts. Last error: %s", maxAttempts, lastErr.Message)
+	}
+	lastResult.Attempts = totalRetries
+	return lastResult, lastErr
+}
+
+func executeNonStreamAttempt(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, opts Options) (NonStreamResult, *assistantturn.OutputError) {
 	start, startErr := StartCompletion(ctx, ds, a, stdReq, opts)
 	if startErr != nil {
 		return NonStreamResult{SessionID: start.SessionID, Payload: start.Payload}, startErr

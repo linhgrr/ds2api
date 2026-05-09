@@ -4,10 +4,14 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"ds2api/internal/account"
 	"ds2api/internal/auth"
+	"ds2api/internal/config"
 	dsclient "ds2api/internal/deepseek/client"
 	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
@@ -18,17 +22,13 @@ type fakeDeepSeekCaller struct {
 	responses      []*http.Response
 	payloads       []map[string]any
 	uploads        []dsclient.UploadFileRequest
+	accountIDs     []string
 }
 
 type currentInputRuntimeConfig struct{}
 
 func (currentInputRuntimeConfig) CurrentInputFileEnabled() bool { return true }
 func (currentInputRuntimeConfig) CurrentInputFileMinChars() int { return 0 }
-
-func (f *fakeDeepSeekCaller) CreateSession(context.Context, *auth.RequestAuth, int) (string, error) {
-	f.createSessions++
-	return "session-1", nil
-}
 
 func (f *fakeDeepSeekCaller) GetPow(context.Context, *auth.RequestAuth, int) (string, error) {
 	return "pow", nil
@@ -39,14 +39,25 @@ func (f *fakeDeepSeekCaller) UploadFile(_ context.Context, _ *auth.RequestAuth, 
 	return &dsclient.UploadFileResult{ID: "file-runtime-1"}, nil
 }
 
-func (f *fakeDeepSeekCaller) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
+func (f *fakeDeepSeekCaller) CallCompletion(_ context.Context, a *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
 	f.payloads = append(f.payloads, payload)
+	if a != nil {
+		f.accountIDs = append(f.accountIDs, a.AccountID)
+	}
 	if len(f.responses) == 0 {
 		return sseHTTPResponse(http.StatusOK, `data: {"p":"response/content","v":"fallback"}`), nil
 	}
 	resp := f.responses[0]
 	f.responses = f.responses[1:]
 	return resp, nil
+}
+
+func (f *fakeDeepSeekCaller) CreateSession(_ context.Context, a *auth.RequestAuth, _ int) (string, error) {
+	f.createSessions++
+	if a != nil && strings.TrimSpace(a.AccountID) != "" {
+		return "session-" + a.AccountID, nil
+	}
+	return "session-1", nil
 }
 
 func TestExecuteNonStreamWithRetryBuildsCanonicalTurn(t *testing.T) {
@@ -300,6 +311,135 @@ func TestExecuteNonStreamWithRetryReturns422AfterStructuredOutputRetryLimit(t *t
 	if result.Turn.ResponseMessageID != 103 {
 		t.Fatalf("expected final failed turn to be returned, got %#v", result.Turn.ResponseMessageID)
 	}
+}
+
+func TestExecuteNonStreamWithRetryManagedFailoverUsesRoundRobinAccounts(t *testing.T) {
+	a := managedTestAuth(t)
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":201,"p":"response/status","v":"FINISHED"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":202,"p":"response/status","v":"FINISHED"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":203,"p":"response/content","v":"ok"}`),
+	}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "final prompt",
+	}
+
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{RetryEnabled: true})
+	if outErr != nil {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	if result.Attempts != 2 {
+		t.Fatalf("expected two managed-account retries, got %d", result.Attempts)
+	}
+	if ds.createSessions != 3 {
+		t.Fatalf("expected one fresh session per account attempt, got %d", ds.createSessions)
+	}
+	wantAccounts := []string{"alpha@example.com", "beta@example.com", "gamma@example.com"}
+	if strings.Join(ds.accountIDs, ",") != strings.Join(wantAccounts, ",") {
+		t.Fatalf("account sequence mismatch: got %v want %v", ds.accountIDs, wantAccounts)
+	}
+	if len(ds.payloads) != 3 {
+		t.Fatalf("expected three completion calls, got %d", len(ds.payloads))
+	}
+	if got := ds.payloads[1]["parent_message_id"]; got != nil {
+		t.Fatalf("expected full failover replay instead of same-session retry, got parent_message_id=%#v", got)
+	}
+	if result.Turn.Text != "ok" {
+		t.Fatalf("expected final success text, got %q", result.Turn.Text)
+	}
+}
+
+func TestExecuteNonStreamWithRetryManagedFailoverExhaustsRetryBudget(t *testing.T) {
+	a := managedTestAuth(t)
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":301,"p":"response/content","v":"{\"score\":\"a\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":302,"p":"response/content","v":"{\"score\":\"b\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":303,"p":"response/content","v":"{\"score\":\"c\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":304,"p":"response/content","v":"{\"score\":\"d\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":305,"p":"response/content","v":"{\"score\":\"e\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":306,"p":"response/content","v":"{\"score\":\"f\"}"}`),
+	}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "final prompt",
+		StructuredOutput: &promptcompat.StructuredOutputSpec{
+			Mode: "json_schema",
+			Schema: map[string]any{
+				"type": "object",
+				"required": []any{
+					"score",
+				},
+				"properties": map[string]any{
+					"score": map[string]any{"type": "integer"},
+				},
+			},
+		},
+	}
+
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{RetryEnabled: true})
+	if outErr == nil {
+		t.Fatal("expected managed-account retry exhaustion error")
+	}
+	if outErr.Status != http.StatusUnprocessableEntity || outErr.Code != "structured_output_validation_failed" {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	if !strings.Contains(outErr.Message, "All managed-account retries failed after 6 attempts") {
+		t.Fatalf("expected exhaustion detail in error message, got %q", outErr.Message)
+	}
+	if result.Attempts != 5 {
+		t.Fatalf("expected five retries after the initial attempt, got %d", result.Attempts)
+	}
+	if ds.createSessions != 6 {
+		t.Fatalf("expected six fresh sessions, got %d", ds.createSessions)
+	}
+	wantAccounts := []string{
+		"alpha@example.com",
+		"beta@example.com",
+		"gamma@example.com",
+		"alpha@example.com",
+		"beta@example.com",
+		"gamma@example.com",
+	}
+	if strings.Join(ds.accountIDs, ",") != strings.Join(wantAccounts, ",") {
+		t.Fatalf("account sequence mismatch: got %v want %v", ds.accountIDs, wantAccounts)
+	}
+}
+
+func managedTestAuth(t *testing.T) *auth.RequestAuth {
+	t.Helper()
+	const rawConfig = `{"accounts":[{"email":"alpha@example.com","password":"pw1"},{"email":"beta@example.com","password":"pw2"},{"email":"gamma@example.com","password":"pw3"}],"keys":["proxypal-local"]}`
+	prev := os.Getenv("DS2API_CONFIG_JSON")
+	if err := os.Setenv("DS2API_CONFIG_JSON", rawConfig); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() {
+		if prev == "" {
+			_ = os.Unsetenv("DS2API_CONFIG_JSON")
+			return
+		}
+		_ = os.Setenv("DS2API_CONFIG_JSON", prev)
+	})
+
+	store, err := config.LoadStoreWithError()
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	resolver := auth.NewResolver(store, account.NewPool(store), func(_ context.Context, acc config.Account) (string, error) {
+		return "token-for-" + acc.Email, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer proxypal-local")
+	a, err := resolver.Determine(req)
+	if err != nil {
+		t.Fatalf("determine auth: %v", err)
+	}
+	t.Cleanup(func() { resolver.Release(a) })
+	return a
 }
 
 func sseHTTPResponse(status int, lines ...string) *http.Response {

@@ -24,13 +24,14 @@ var (
 )
 
 type RequestAuth struct {
-	UseConfigToken bool
-	DeepSeekToken  string
-	CallerID       string
-	AccountID      string
-	Account        config.Account
-	TriedAccounts  map[string]bool
-	resolver       *Resolver
+	UseConfigToken  bool
+	DeepSeekToken   string
+	CallerID        string
+	AccountID       string
+	TargetAccountID string
+	Account         config.Account
+	TriedAccounts   map[string]bool
+	resolver        *Resolver
 }
 
 type LoginFunc func(ctx context.Context, acc config.Account) (string, error)
@@ -96,12 +97,13 @@ func (r *Resolver) acquireManagedRequestAuth(ctx context.Context, callerID, targ
 		}
 
 		a := &RequestAuth{
-			UseConfigToken: true,
-			CallerID:       callerID,
-			AccountID:      acc.Identifier(),
-			Account:        acc,
-			TriedAccounts:  tried,
-			resolver:       r,
+			UseConfigToken:  true,
+			CallerID:        callerID,
+			AccountID:       acc.Identifier(),
+			TargetAccountID: target,
+			Account:         acc,
+			TriedAccounts:   tried,
+			resolver:        r,
 		}
 
 		if err := r.ensureManagedToken(ctx, a); err != nil {
@@ -213,6 +215,39 @@ func (r *Resolver) Release(a *RequestAuth) {
 		return
 	}
 	r.Pool.Release(a.AccountID)
+}
+
+func (a *RequestAuth) ManagedAccountCount() int {
+	if a == nil || !a.UseConfigToken || a.resolver == nil || a.resolver.Store == nil {
+		return 0
+	}
+	return len(a.resolver.Store.Accounts())
+}
+
+func (a *RequestAuth) SupportsRoundRobinFailover() bool {
+	return a != nil &&
+		a.UseConfigToken &&
+		strings.TrimSpace(a.TargetAccountID) == "" &&
+		a.ManagedAccountCount() > 1 &&
+		a.resolver != nil
+}
+
+func (a *RequestAuth) RoundRobinRetryLimit() int {
+	if !a.SupportsRoundRobinFailover() {
+		return 1
+	}
+	return a.ManagedAccountCount() * 2
+}
+
+func (a *RequestAuth) SwitchAccountRoundRobin(ctx context.Context) bool {
+	if !a.SupportsRoundRobinFailover() {
+		return false
+	}
+	total := a.ManagedAccountCount()
+	if total > 1 && len(a.TriedAccounts) >= total-1 {
+		a.TriedAccounts = map[string]bool{}
+	}
+	return a.resolver.SwitchAccount(ctx, a)
 }
 
 func extractCallerToken(req *http.Request) string {

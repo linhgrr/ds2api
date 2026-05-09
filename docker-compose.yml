@@ -1,6 +1,9 @@
 services:
   ds2api:
-    image: ghcr.io/cjackhwang/ds2api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ds2api:local
     container_name: ds2api
     restart: always
     env_file:
