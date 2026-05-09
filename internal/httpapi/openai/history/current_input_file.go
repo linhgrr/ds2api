@@ -37,6 +37,9 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	if stdReq.CurrentInputFileApplied || s.DS == nil || s.Store == nil || a == nil || !s.Store.CurrentInputFileEnabled() {
 		return stdReq, nil
 	}
+	if stdReq.StructuredOutput != nil {
+		return stdReq, nil
+	}
 	threshold := s.Store.CurrentInputFileMinChars()
 
 	index, text := latestUserInputForFile(stdReq.Messages)

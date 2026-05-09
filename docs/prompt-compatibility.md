@@ -370,6 +370,23 @@ Prior conversation history and tool progress.
 - 文件保持文件
 - 需要时把完整上下文拆进 `DS2API_HISTORY.txt` 上下文文件，并按轮次编号成 transcript
 
+### Structured Output 兼容补充（OpenAI `response_format` / `text.format`）
+
+- 对 `chat.completions`，兼容层会读取 `response_format`：
+  - `{"type":"json_object"}`
+  - `{"type":"json_schema","json_schema":{"name","schema","strict"}}`
+- 对 `responses`，兼容层会读取 `text.format`（以及 `text_format` 兼容写法）并按同样规则解析。
+- 在 request normalize 阶段会先校验 `json_schema` 本身；schema 非法时直接返回 `400`，不会把坏 schema 继续透传给下游 provider。
+- 兼容层会在 prompt 组装前注入一条更强的 system 约束，明确要求“只返回一个 JSON 值、禁止 markdown fence / 解释 / 额外文本”，并在 `json_schema` 场景附带 schema 文本。
+- Structured output 走**严格校验**，不是 best-effort 宽松归一：
+  - 尝试从裸 JSON、```json fenced block、首个平衡 JSON 片段中提取结构化内容；
+  - `json_object` 必须真的是 JSON object，不能把普通文本兜底包装成 `{"text": ...}`；
+  - `json_schema` 必须真实满足 schema；不会做类型 coercion、不会补默认值、不会偷偷补齐 required 字段。
+- 非流式阶段若 structured output 校验失败，会在**同一 DeepSeek session** 内基于 `parent_message_id` 发起有限次重试，并追加纠错提示，要求模型重新只输出合法 JSON。
+- 若超过重试上限仍不合法，则直接返回 `422 structured_output_validation_failed`，避免把错误/偏移的数据交给上层调用方。
+- 为了保持 structured output prompt 语义稳定，当 `StructuredOutput` 启用时，兼容层不会把对话折叠进 `DS2API_HISTORY.txt` 当前输入文件模式。
+- `responses` 非流式成功响应仍会附带 `output_parsed`（当 structured output 严格校验成功时）。
+
 ## 12. 修改时必须同步本文档的场景
 
 只要触碰以下任一类行为，就必须在同一提交或同一 PR 中更新本文档：

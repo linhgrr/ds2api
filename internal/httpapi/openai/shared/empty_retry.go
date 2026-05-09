@@ -3,6 +3,7 @@ package shared
 import "strings"
 
 const EmptyOutputRetrySuffix = "Previous reply had no visible output. Please regenerate the visible final answer or tool call now."
+const StructuredOutputRetrySuffix = "Previous reply was rejected because it was not valid structured output. Regenerate exactly one valid JSON value that satisfies the required schema or JSON object constraints. Do not include markdown, prose, comments, or extra text."
 
 func EmptyOutputRetryEnabled() bool {
 	return true
@@ -10,6 +11,10 @@ func EmptyOutputRetryEnabled() bool {
 
 func EmptyOutputRetryMaxAttempts() int {
 	return 1
+}
+
+func StructuredOutputRetryMaxAttempts() int {
+	return 2
 }
 
 func ClonePayloadWithEmptyOutputRetryPrompt(payload map[string]any) map[string]any {
@@ -53,4 +58,30 @@ func UsagePromptWithEmptyOutputRetry(originalPrompt string, retryAttempts int) s
 		parts = append(parts, next)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func ClonePayloadForStructuredOutputRetry(payload map[string]any, parentMessageID int, failureDetail string) map[string]any {
+	clone := make(map[string]any, len(payload))
+	for k, v := range payload {
+		clone[k] = v
+	}
+	original, _ := payload["prompt"].(string)
+	clone["prompt"] = AppendStructuredOutputRetrySuffix(original, failureDetail)
+	if parentMessageID > 0 {
+		clone["parent_message_id"] = parentMessageID
+	}
+	return clone
+}
+
+func AppendStructuredOutputRetrySuffix(prompt, failureDetail string) string {
+	prompt = strings.TrimRight(prompt, "\r\n\t ")
+	suffix := StructuredOutputRetrySuffix
+	failureDetail = strings.TrimSpace(failureDetail)
+	if failureDetail != "" {
+		suffix += " Validation failure: " + failureDetail
+	}
+	if prompt == "" {
+		return suffix
+	}
+	return prompt + "\n\n" + suffix
 }

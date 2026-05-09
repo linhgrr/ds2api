@@ -216,6 +216,42 @@ func TestApplyCurrentInputFileDisabledPassThrough(t *testing.T) {
 	}
 }
 
+func TestApplyCurrentInputFileSkipsStructuredOutputRequests(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{
+			currentInputEnabled: true,
+			currentInputMin:     0,
+		},
+		DS: ds,
+	}
+	req := map[string]any{
+		"model":    "deepseek-v4-flash",
+		"messages": historySplitTestMessages(),
+		"response_format": map[string]any{
+			"type": "json_object",
+		},
+	}
+	stdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+
+	out, err := h.applyCurrentInputFile(context.Background(), &auth.RequestAuth{DeepSeekToken: "token"}, stdReq)
+	if err != nil {
+		t.Fatalf("apply current input file failed: %v", err)
+	}
+	if len(ds.uploadCalls) != 0 {
+		t.Fatalf("expected no uploads for structured output requests, got %d", len(ds.uploadCalls))
+	}
+	if out.CurrentInputFileApplied || out.HistoryText != "" {
+		t.Fatalf("expected structured output request to bypass DS2API_HISTORY.txt, got current_input=%v history=%q", out.CurrentInputFileApplied, out.HistoryText)
+	}
+	if !strings.Contains(out.FinalPrompt, "latest user turn") {
+		t.Fatalf("expected original live prompt to stay inline, got %q", out.FinalPrompt)
+	}
+}
+
 func TestApplyCurrentInputFileUploadsFirstTurnWithNumberedHistoryTranscript(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{

@@ -9,13 +9,15 @@ import (
 
 	"ds2api/internal/auth"
 	dsclient "ds2api/internal/deepseek/client"
+	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
 )
 
 type fakeDeepSeekCaller struct {
-	responses []*http.Response
-	payloads  []map[string]any
-	uploads   []dsclient.UploadFileRequest
+	createSessions int
+	responses      []*http.Response
+	payloads       []map[string]any
+	uploads        []dsclient.UploadFileRequest
 }
 
 type currentInputRuntimeConfig struct{}
@@ -24,6 +26,7 @@ func (currentInputRuntimeConfig) CurrentInputFileEnabled() bool { return true }
 func (currentInputRuntimeConfig) CurrentInputFileMinChars() int { return 0 }
 
 func (f *fakeDeepSeekCaller) CreateSession(context.Context, *auth.RequestAuth, int) (string, error) {
+	f.createSessions++
 	return "session-1", nil
 }
 
@@ -181,6 +184,121 @@ func TestStartCompletionAppliesCurrentInputFileGlobally(t *testing.T) {
 	}
 	if !start.Request.CurrentInputFileApplied || !strings.Contains(start.Request.PromptTokenText, "# DS2API_HISTORY.txt") {
 		t.Fatalf("expected prepared request to carry current input file state, got %#v", start.Request)
+	}
+}
+
+func TestStartCompletionSkipsCurrentInputFileForStructuredOutput(t *testing.T) {
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{sseHTTPResponse(http.StatusOK, `data: {"p":"response/content","v":"{\"ok\":true}"}`)}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test_adapter",
+		RequestedModel:  "deepseek-v4-flash",
+		ResolvedModel:   "deepseek-v4-flash",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "first user turn",
+		FinalPrompt:     "first user turn",
+		Messages: []any{
+			map[string]any{"role": "user", "content": "first user turn"},
+		},
+		StructuredOutput: &promptcompat.StructuredOutputSpec{Mode: "json_object"},
+	}
+
+	start, outErr := StartCompletion(context.Background(), ds, &auth.RequestAuth{DeepSeekToken: "token"}, stdReq, Options{
+		CurrentInputFile: currentInputRuntimeConfig{},
+	})
+	if outErr != nil {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	if len(ds.uploads) != 0 {
+		t.Fatalf("expected current input upload to be skipped, got %d", len(ds.uploads))
+	}
+	if start.Request.CurrentInputFileApplied {
+		t.Fatalf("expected current input file to remain disabled for structured output")
+	}
+}
+
+func TestExecuteNonStreamWithRetryUsesParentMessageAndPromptCorrectionForStructuredOutput(t *testing.T) {
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":91,"p":"response/content","v":"{\"score\":\"9\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":92,"p":"response/content","v":"{\"score\":9}"}`),
+	}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "final prompt",
+		StructuredOutput: &promptcompat.StructuredOutputSpec{
+			Mode: "json_schema",
+			Schema: map[string]any{
+				"type": "object",
+				"required": []any{
+					"score",
+				},
+				"properties": map[string]any{
+					"score": map[string]any{"type": "integer"},
+				},
+			},
+		},
+	}
+
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, &auth.RequestAuth{}, stdReq, Options{RetryEnabled: true})
+	if outErr != nil {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	if ds.createSessions != 1 {
+		t.Fatalf("expected one session, got %d", ds.createSessions)
+	}
+	if len(ds.payloads) != 2 {
+		t.Fatalf("expected two completion calls, got %d", len(ds.payloads))
+	}
+	if got := ds.payloads[1]["parent_message_id"]; got != 91 {
+		t.Fatalf("retry parent_message_id mismatch: %#v", got)
+	}
+	prompt, _ := ds.payloads[1]["prompt"].(string)
+	if !strings.Contains(prompt, shared.StructuredOutputRetrySuffix) {
+		t.Fatalf("expected structured output retry prompt suffix, got %q", prompt)
+	}
+	if result.Turn.Text != `{"score":9}` {
+		t.Fatalf("expected canonical structured output, got %q", result.Turn.Text)
+	}
+}
+
+func TestExecuteNonStreamWithRetryReturns422AfterStructuredOutputRetryLimit(t *testing.T) {
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":101,"p":"response/content","v":"{\"score\":\"a\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":102,"p":"response/content","v":"{\"score\":\"b\"}"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":103,"p":"response/content","v":"{\"score\":\"c\"}"}`),
+	}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "final prompt",
+		StructuredOutput: &promptcompat.StructuredOutputSpec{
+			Mode: "json_schema",
+			Schema: map[string]any{
+				"type": "object",
+				"required": []any{
+					"score",
+				},
+				"properties": map[string]any{
+					"score": map[string]any{"type": "integer"},
+				},
+			},
+		},
+	}
+
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, &auth.RequestAuth{}, stdReq, Options{RetryEnabled: true})
+	if outErr == nil {
+		t.Fatal("expected structured output validation error")
+	}
+	if outErr.Status != http.StatusUnprocessableEntity || outErr.Code != "structured_output_validation_failed" {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	if len(ds.payloads) != 3 {
+		t.Fatalf("expected initial call plus two retries, got %d", len(ds.payloads))
+	}
+	if result.Turn.ResponseMessageID != 103 {
+		t.Fatalf("expected final failed turn to be returned, got %#v", result.Turn.ResponseMessageID)
 	}
 }
 

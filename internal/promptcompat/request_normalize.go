@@ -32,28 +32,34 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 		responseModel = resolvedModel
 	}
 	toolPolicy := DefaultToolChoicePolicy()
+	structuredOutput := ExtractStructuredOutputSpecFromChat(req)
+	if err := ValidateStructuredOutputSpec(structuredOutput); err != nil {
+		return StandardRequest{}, err
+	}
+	messagesRaw = ApplyStructuredOutputPrompt(messagesRaw, structuredOutput)
 	finalPrompt, toolNames := BuildOpenAIPrompt(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
 	toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
 	passThrough := collectOpenAIChatPassThrough(req)
 	refFileIDs := CollectOpenAIRefFileIDs(req)
 
 	return StandardRequest{
-		Surface:         "openai_chat",
-		RequestedModel:  strings.TrimSpace(model),
-		ResolvedModel:   resolvedModel,
-		ResponseModel:   responseModel,
-		Messages:        messagesRaw,
-		PromptTokenText: finalPrompt,
-		ToolsRaw:        req["tools"],
-		FinalPrompt:     finalPrompt,
-		ToolNames:       toolNames,
-		ToolChoice:      toolPolicy,
-		Stream:          util.ToBool(req["stream"]),
-		Thinking:        thinkingEnabled,
-		Search:          searchEnabled,
-		RefFileIDs:      refFileIDs,
-		RefFileTokens:   estimateInlineFileTokens(req),
-		PassThrough:     passThrough,
+		Surface:          "openai_chat",
+		RequestedModel:   strings.TrimSpace(model),
+		ResolvedModel:    resolvedModel,
+		ResponseModel:    responseModel,
+		Messages:         messagesRaw,
+		PromptTokenText:  finalPrompt,
+		ToolsRaw:         req["tools"],
+		FinalPrompt:      finalPrompt,
+		ToolNames:        toolNames,
+		ToolChoice:       toolPolicy,
+		Stream:           util.ToBool(req["stream"]),
+		Thinking:         thinkingEnabled,
+		Search:           searchEnabled,
+		RefFileIDs:       refFileIDs,
+		RefFileTokens:    estimateInlineFileTokens(req),
+		PassThrough:      passThrough,
+		StructuredOutput: structuredOutput,
 	}, nil
 }
 
@@ -77,6 +83,11 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 	if len(messagesRaw) == 0 {
 		return StandardRequest{}, fmt.Errorf("request must include 'input' or 'messages'")
 	}
+	structuredOutput := ExtractStructuredOutputSpecFromResponses(req)
+	if err := ValidateStructuredOutputSpec(structuredOutput); err != nil {
+		return StandardRequest{}, err
+	}
+	messagesRaw = ApplyStructuredOutputPrompt(messagesRaw, structuredOutput)
 	toolPolicy, err := parseToolChoicePolicy(req["tool_choice"], req["tools"])
 	if err != nil {
 		return StandardRequest{}, err
@@ -90,22 +101,23 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 	refFileIDs := CollectOpenAIRefFileIDs(req)
 
 	return StandardRequest{
-		Surface:         "openai_responses",
-		RequestedModel:  model,
-		ResolvedModel:   resolvedModel,
-		ResponseModel:   model,
-		Messages:        messagesRaw,
-		PromptTokenText: finalPrompt,
-		ToolsRaw:        req["tools"],
-		FinalPrompt:     finalPrompt,
-		ToolNames:       toolNames,
-		ToolChoice:      toolPolicy,
-		Stream:          util.ToBool(req["stream"]),
-		Thinking:        thinkingEnabled,
-		Search:          searchEnabled,
-		RefFileIDs:      refFileIDs,
-		RefFileTokens:   estimateInlineFileTokens(req),
-		PassThrough:     passThrough,
+		Surface:          "openai_responses",
+		RequestedModel:   model,
+		ResolvedModel:    resolvedModel,
+		ResponseModel:    model,
+		Messages:         messagesRaw,
+		PromptTokenText:  finalPrompt,
+		ToolsRaw:         req["tools"],
+		FinalPrompt:      finalPrompt,
+		ToolNames:        toolNames,
+		ToolChoice:       toolPolicy,
+		Stream:           util.ToBool(req["stream"]),
+		Thinking:         thinkingEnabled,
+		Search:           searchEnabled,
+		RefFileIDs:       refFileIDs,
+		RefFileTokens:    estimateInlineFileTokens(req),
+		PassThrough:      passThrough,
+		StructuredOutput: structuredOutput,
 	}, nil
 }
 

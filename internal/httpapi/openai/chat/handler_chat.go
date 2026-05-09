@@ -92,6 +92,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respBody := openaifmt.BuildChatCompletionWithToolCalls(result.SessionID, stdReq.ResponseModel, result.Turn.Prompt, result.Turn.Thinking, result.Turn.Text, result.Turn.ToolCalls, stdReq.ToolsRaw)
+		if result.Turn.ParsedStructuredOutput != nil {
+			if choices, ok := respBody["choices"].([]map[string]any); ok && len(choices) > 0 {
+				if msg, ok := choices[0]["message"].(map[string]any); ok {
+					msg["parsed"] = result.Turn.ParsedStructuredOutput
+				}
+			}
+		}
 		respBody["usage"] = assistantturn.OpenAIChatUsage(result.Turn)
 		finishReason := assistantturn.FinalizeTurn(result.Turn, assistantturn.FinalizeOptions{}).FinishReason
 		if historySession != nil {

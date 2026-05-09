@@ -119,6 +119,9 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 			historySession.SuccessTurn(http.StatusOK, result.Turn, assistantturn.OpenAIResponsesUsage(result.Turn))
 		}
 		responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, stdReq.ResponseModel, result.Turn.Prompt, result.Turn.Thinking, result.Turn.Text, result.Turn.ToolCalls, stdReq.ToolsRaw)
+		if result.Turn.ParsedStructuredOutput != nil {
+			responseObj["output_parsed"] = result.Turn.ParsedStructuredOutput
+		}
 		responseObj["usage"] = assistantturn.OpenAIResponsesUsage(result.Turn)
 		h.getResponseStore().put(owner, responseID, responseObj)
 		writeJSON(w, http.StatusOK, responseObj)

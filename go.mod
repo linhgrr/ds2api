@@ -9,9 +9,13 @@ require (
 	github.com/hupe1980/go-tiktoken v0.0.10
 	github.com/refraction-networking/utls v1.8.2
 	github.com/router-for-me/CLIProxyAPI/v6 v6.9.14
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 )
 
-require github.com/dlclark/regexp2 v1.11.5 // indirect
+require (
+	github.com/dlclark/regexp2 v1.11.5 // indirect
+	golang.org/x/text v0.35.0 // indirect
+)
 
 require (
 	github.com/klauspost/compress v1.18.5 // indirect

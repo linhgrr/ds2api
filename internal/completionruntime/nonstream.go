@@ -100,6 +100,8 @@ func ExecuteNonStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.R
 	pow := start.Pow
 
 	attempts := 0
+	emptyRetryAttempts := 0
+	structuredOutputRetryAttempts := 0
 	currentResp := start.Response
 	usagePrompt := stdReq.PromptTokenText
 	accumulatedThinking := ""
@@ -125,19 +127,50 @@ func ExecuteNonStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.R
 			ResponseMessageID:     turn.ResponseMessageID,
 		}, buildOptions(stdReq, usagePrompt, opts))
 
+		if validationErr := validateStructuredOutputTurn(&turn, stdReq.StructuredOutput); validationErr != nil {
+			retryMax := shared.StructuredOutputRetryMaxAttempts()
+			if opts.RetryEnabled && structuredOutputRetryAttempts < retryMax {
+				attempts++
+				structuredOutputRetryAttempts++
+				config.Logger.Info("[completion_runtime_structured_output_retry] attempting retry", "surface", stdReq.Surface, "stream", false, "retry_attempt", structuredOutputRetryAttempts, "parent_message_id", turn.ResponseMessageID, "validation_error", validationErr.Error())
+				retryPow, powErr := ds.GetPow(ctx, a, maxAttempts)
+				if powErr != nil {
+					config.Logger.Warn("[completion_runtime_structured_output_retry] retry PoW fetch failed, falling back to original PoW", "surface", stdReq.Surface, "retry_attempt", structuredOutputRetryAttempts, "error", powErr)
+					retryPow = pow
+				}
+				retryPayload := shared.ClonePayloadForStructuredOutputRetry(payload, turn.ResponseMessageID, validationErr.Error())
+				nextResp, err := ds.CallCompletion(ctx, a, retryPayload, retryPow, maxAttempts)
+				if err != nil {
+					return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, &assistantturn.OutputError{Status: http.StatusInternalServerError, Message: "Failed to get completion.", Code: "error"}
+				}
+				payload = retryPayload
+				if prompt, ok := retryPayload["prompt"].(string); ok && strings.TrimSpace(prompt) != "" {
+					usagePrompt = prompt
+				}
+				currentResp = nextResp
+				continue
+			}
+			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, &assistantturn.OutputError{
+				Status:  http.StatusUnprocessableEntity,
+				Message: fmt.Sprintf("Structured output validation failed: %v", validationErr),
+				Code:    "structured_output_validation_failed",
+			}
+		}
+
 		retryMax := opts.RetryMaxAttempts
 		if retryMax <= 0 {
 			retryMax = shared.EmptyOutputRetryMaxAttempts()
 		}
-		if !opts.RetryEnabled || !assistantturn.ShouldRetryEmptyOutput(turn, attempts, retryMax) {
+		if !opts.RetryEnabled || !assistantturn.ShouldRetryEmptyOutput(turn, emptyRetryAttempts, retryMax) {
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, turn.Error
 		}
 
 		attempts++
-		config.Logger.Info("[completion_runtime_empty_retry] attempting synthetic retry", "surface", stdReq.Surface, "stream", false, "retry_attempt", attempts, "parent_message_id", turn.ResponseMessageID)
+		emptyRetryAttempts++
+		config.Logger.Info("[completion_runtime_empty_retry] attempting synthetic retry", "surface", stdReq.Surface, "stream", false, "retry_attempt", emptyRetryAttempts, "parent_message_id", turn.ResponseMessageID)
 		retryPow, powErr := ds.GetPow(ctx, a, maxAttempts)
 		if powErr != nil {
-			config.Logger.Warn("[completion_runtime_empty_retry] retry PoW fetch failed, falling back to original PoW", "surface", stdReq.Surface, "retry_attempt", attempts, "error", powErr)
+			config.Logger.Warn("[completion_runtime_empty_retry] retry PoW fetch failed, falling back to original PoW", "surface", stdReq.Surface, "retry_attempt", emptyRetryAttempts, "error", powErr)
 			retryPow = pow
 		}
 		retryPayload := shared.ClonePayloadForEmptyOutputRetry(payload, turn.ResponseMessageID)
@@ -145,7 +178,8 @@ func ExecuteNonStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.R
 		if err != nil {
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, &assistantturn.OutputError{Status: http.StatusInternalServerError, Message: "Failed to get completion.", Code: "error"}
 		}
-		usagePrompt = shared.UsagePromptWithEmptyOutputRetry(usagePrompt, attempts)
+		payload = retryPayload
+		usagePrompt = shared.UsagePromptWithEmptyOutputRetry(usagePrompt, emptyRetryAttempts)
 		currentResp = nextResp
 	}
 }
@@ -190,4 +224,17 @@ func authOutputError(a *auth.RequestAuth) *assistantturn.OutputError {
 
 func Errorf(status int, format string, args ...any) *assistantturn.OutputError {
 	return &assistantturn.OutputError{Status: status, Message: fmt.Sprintf(format, args...), Code: "error"}
+}
+
+func validateStructuredOutputTurn(turn *assistantturn.Turn, spec *promptcompat.StructuredOutputSpec) error {
+	if spec == nil || turn == nil || len(turn.ToolCalls) > 0 || strings.TrimSpace(turn.Text) == "" {
+		return nil
+	}
+	canonical, parsed, err := promptcompat.ValidateStructuredOutput(turn.Text, spec)
+	if err != nil {
+		return err
+	}
+	turn.Text = canonical
+	turn.ParsedStructuredOutput = parsed
+	return nil
 }

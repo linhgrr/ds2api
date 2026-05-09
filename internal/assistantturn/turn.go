@@ -34,21 +34,22 @@ type OutputError struct {
 }
 
 type Turn struct {
-	Model             string
-	Prompt            string
-	RawText           string
-	RawThinking       string
-	DetectionThinking string
-	Text              string
-	Thinking          string
-	ToolCalls         []toolcall.ParsedToolCall
-	ParsedToolCalls   toolcall.ToolCallParseResult
-	CitationLinks     map[int]string
-	ContentFilter     bool
-	ResponseMessageID int
-	StopReason        StopReason
-	Usage             Usage
-	Error             *OutputError
+	Model                  string
+	Prompt                 string
+	RawText                string
+	RawThinking            string
+	DetectionThinking      string
+	Text                   string
+	Thinking               string
+	ParsedStructuredOutput any
+	ToolCalls              []toolcall.ParsedToolCall
+	ParsedToolCalls        toolcall.ToolCallParseResult
+	CitationLinks          map[int]string
+	ContentFilter          bool
+	ResponseMessageID      int
+	StopReason             StopReason
+	Usage                  Usage
+	Error                  *OutputError
 }
 
 type FinalizeOptions struct {

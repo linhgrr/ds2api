@@ -21,6 +21,7 @@ type StandardRequest struct {
 	RefFileIDs              []string
 	RefFileTokens           int
 	PassThrough             map[string]any
+	StructuredOutput        *StructuredOutputSpec
 }
 
 type ToolChoiceMode string
